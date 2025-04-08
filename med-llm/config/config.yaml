@@ -1,0 +1,40 @@
+# APIs 配置已移至 Cloudflare Worker
+# 请参考 cloudflare/src/index.js 和 cloudflare/wrangler.toml 文件
+
+# 爬虫配置
+crawlers:
+  wikipedia:
+    base_url: "https://en.wikipedia.org/wiki/"
+    rate_limit: 1  # 请求间隔(秒)
+    user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+  psychonautwiki:
+    base_url: "https://psychonautwiki.org/wiki/"
+    rate_limit: 2
+    user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+  pubmed:
+    base_url: "https://pubmed.ncbi.nlm.nih.gov/"
+    rate_limit: 1
+    api_key: ${PUBMED_API_KEY}
+  fda:
+    base_url: "https://www.accessdata.fda.gov/scripts/cder/daf/"
+    rate_limit: 1
+    user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+
+# 向量数据库配置
+vector_db:
+  type: chromadb
+  persist_directory: "../data/vector_db"
+  collection_name: "drug_knowledge"
+  embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
+  chunk_size: 1000
+  chunk_overlap: 200
+
+# Telegram Bot 配置已移至 Cloudflare Worker
+# 请参考 cloudflare/src/index.js 文件
+
+# 数据处理配置
+data_processing:
+  raw_data_dir: "../data/raw"
+  processed_data_dir: "../data/processed"
+  min_text_length: 100  # 最小文本长度
+  max_text_length: 10000  # 最大文本长度 

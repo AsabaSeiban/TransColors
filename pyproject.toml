@@ -1,0 +1,69 @@
+[project]
+name = "med-llm"
+version = "0.1.0"
+description = "药物信息问答大模型"
+requires-python = ">=3.10,<3.12"
+authors = [
+    {name = "AsabaSeiban", email = "AsabaSeiban@outlook.com"}
+]
+dependencies = [
+    # 爬虫相关
+    "beautifulsoup4>=4.12.0",
+    "requests>=2.31.0",
+    "aiohttp>=3.9.0",  # 异步HTTP客户端
+    
+    # 数据处理
+    "pandas>=2.1.0",
+    "numpy>=1.24.0",
+    "langchain>=0.0.350",
+    "chromadb>=0.4.15",
+    "sentence-transformers>=2.2.2",
+    
+    # API 相关
+    "openai>=1.3.0",
+    "anthropic>=0.5.0",
+    "google-generativeai>=0.3.0",
+    
+    # 工具
+    "python-dotenv>=1.0.0",
+    "tqdm>=4.66.0",
+    "loguru>=0.7.0",
+    "pyyaml>=6.0.1",
+    "pydantic>=2.5.0",  # 数据验证
+    "tenacity>=8.2.0",  # 重试机制
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "black>=23.11.0",
+    "isort>=5.12.0",
+    "mypy>=1.7.0",
+    "ruff>=0.1.0",
+]
+
+[tool.black]
+line-length = 88
+target-version = ['py310']
+
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+ignore_missing_imports = true
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+select = ["E", "F", "B", "I", "N", "UP", "PL", "RUF"]
+ignore = ["E501"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"] 

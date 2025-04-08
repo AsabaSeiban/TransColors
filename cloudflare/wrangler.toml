@@ -1,0 +1,34 @@
+name = "med-llm-telegram-bot"
+main = "src/index.js"
+compatibility_date = "2024-03-20"
+
+# 允许使用更长的执行时间
+usage_model = "bundled"
+compatibility_flags = ["nodejs_compat"]
+
+# 环境变量配置
+[vars]
+# 以下 API 密钥将从 Cloudflare 控制台中添加
+# TELEGRAM_BOT_TOKEN = ""
+# OPENAI_API_KEY = ""
+# ANTHROPIC_API_KEY = ""
+# GOOGLE_API_KEY = ""
+
+# 开发环境配置
+[env.dev]
+workers_dev = true
+# 开发环境中的环境变量可以在 .dev.vars 文件中配置
+
+# 生产环境配置
+[env.production]
+workers_dev = true
+# 可以设置自定义域名
+# routes = [
+#   { pattern = "bot.your-domain.com/*", custom_domain = true }
+# ]
+
+# 服务绑定
+# 如果需要 KV 或 D1 数据库，取消下面的注释
+# [[kv_namespaces]]
+# binding = "BOT_DATA"
+# id = "xxxx" # 需要在 Cloudflare 控制台中创建 KV 命名空间并获取 ID 
