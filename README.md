@@ -52,7 +52,7 @@ TransColors/
   - Python 3.10+ (爬虫和数据处理)
   - JavaScript (Telegram Bot 和 API 调用)
   - Cloudflare Workers
-  - 大模型 API：OpenAI、Anthropic、Google
+  - 大模型 API：OpenAI
   - ChromaDB 向量数据库
   - 数据源：维基百科、PsychonautWiki 等
 
@@ -64,7 +64,7 @@ TransColors/
 ## 系统架构
 
 ```
-用户 <-> Telegram Bot <-> Cloudflare Worker <-> 大模型 API (OpenAI/Anthropic/Google)
+用户 <-> Telegram Bot <-> Cloudflare Worker <-> OpenAI API
                             ^
                             |
                    查询    |
