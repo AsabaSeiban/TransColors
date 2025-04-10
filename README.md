@@ -6,8 +6,8 @@
 
 项目分为三个主要部分：
 
-1. **Med LLM (药物大模型)**
-    - 基于爬虫和知识库的药物信息查询系统
+1. **TransLLM (Trans 大模型)**
+    - 基于爬虫和知识库的大模型（包括性别转换、移民、生活方式改变等）
     - 使用向量数据库进行高效检索
     - 通过 Telegram 机器人提供服务
     - 直接在 Cloudflare Workers 上运行 Telegram Bot 和大模型 API 调用
@@ -25,7 +25,7 @@
 
 ```
 TransColors/
-├── med-llm/                # 药物大模型相关代码 (Python)
+├── trans-llm/                # 大模型相关代码 (Python)
 │   ├── config/             # 配置文件
 │   │   └── config.yaml     # 爬虫和向量数据库配置
 │   ├── data/               # 数据存储
@@ -48,7 +48,7 @@ TransColors/
 
 ## 技术栈
 
-- **Med LLM**
+- **TransLLM**
     - Python 3.10+ (爬虫和数据处理)
     - JavaScript (Telegram Bot 和 API 调用)
     - Cloudflare Workers
