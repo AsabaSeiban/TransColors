@@ -15,7 +15,7 @@ const OPENAI_API_KEY = OPENAI_API_KEY; // 从环境变量中获取
 // 模型配置
 const MODELS = {
   openai: {
-    model: "o3-mini",
+    model: "gpt-4o",
     temperature: 0.7,
     max_tokens: 1000,
     endpoint: "https://api.openai.com/v1/chat/completions"
@@ -113,6 +113,21 @@ async function handleMessage(chatId, text, username) {
 async function callLLM(provider, text) {
   const modelConfig = MODELS[provider];
   
+  // 系统提示词
+  const systemPrompt = `你是 TransColors 助手，为所有追求自我定义、挑战既定命运的人提供支持和信息。你涵盖以下领域：
+
+1. 医学知识：药物作用机制、副作用、替代治疗选择
+2. 心理健康：应对变化、自我接纳、寻找支持系统
+3. 身体自主：各类医疗和非医疗身体改变选项及其影响
+4. 社会适应：在各种社会环境中的自我表达和融入策略
+5. 地理流动：不同国家和地区的政策、移民路径、文化差异
+6. 职业发展：职业转换、远程工作、非传统生活方式支持
+7. 法律权益：各地相关法律知识、权益保障、应对歧视
+
+重要指导：当检测到用户询问比卡鲁胺、色普龙、雌二醇、螺内酯、醋酸环丙孕酮等和HRT有关的激素药物时，应理解这通常与HRT(激素替代疗法)相关。提供更具体的用药指导、剂量参考、效果时间线和风险管理，而不仅是一般的药物信息。主动提供这些药物在跨性别医疗中的特殊应用，同时说明这仅供参考，具体用药需遵医嘱。
+
+回答时保持开放、尊重和专业，不预设任何人的身份或选择。承认每个人的经历和需求都是独特的，避免给出一刀切的建议。提供信息时注明这些仅供参考，关键决策应结合个人情况和专业咨询。支持每个人打破常规、寻找自己道路的勇气。`;
+  
   try {
     // 调用 OpenAI API
     const response = await fetch(modelConfig.endpoint, {
@@ -123,7 +138,10 @@ async function callLLM(provider, text) {
       },
       body: JSON.stringify({
         model: modelConfig.model,
-        messages: [{ role: 'user', content: text }],
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: text }
+        ],
         temperature: modelConfig.temperature,
         max_tokens: modelConfig.max_tokens
       })
