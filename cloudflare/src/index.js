@@ -62,7 +62,7 @@ const MODELS = {
   grok: {
     model: "grok-3-latest",
     temperature: 0.5,
-    max_tokens: 4096,
+    max_tokens: 2048,
     endpoint: "https://api.x.ai/v1/chat/completions" // Grok API端点
   }
 };
