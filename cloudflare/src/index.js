@@ -78,84 +78,79 @@ async function checkAndUpdateUsage(userId, username, env) {
   // 检查用户是否为管理员
   const adminUsersStr = await env.TRANS_COLORS_KV.get(KV_KEYS.ADMIN_USERS) || "[]";
   const adminUsers = JSON.parse(adminUsersStr);
-
-  // 如果用户名在管理员列表中，直接允许请求
-  if (username && adminUsers.includes(username)) {
-    return {
-      allowed: true,
-      isAdmin: true
-    };
-  }
-
+  const isAdmin = username && adminUsers.includes(username);
+  
   const now = new Date();
   const currentDay = now.getDate();
-
+  
   // 获取上次重置日期
   let lastResetDay = parseInt(await env.TRANS_COLORS_KV.get(KV_KEYS.LAST_RESET_DAY) || currentDay);
-
+  
   // 检查是否需要重置每日计数
   if (currentDay !== lastResetDay) {
     // 存储新的重置日期
     await env.TRANS_COLORS_KV.put(KV_KEYS.LAST_RESET_DAY, currentDay.toString());
-
+    
     // 重置总请求数
     await env.TRANS_COLORS_KV.put(KV_KEYS.TOTAL_REQUESTS, "0");
-
+    
     // 由于无法批量删除，重置计数器会在下面的代码中自动处理
     // 当用户计数为0时
     lastResetDay = currentDay;
   }
-
+  
   // 获取总体每日请求数
   let totalDailyRequests = parseInt(await env.TRANS_COLORS_KV.get(KV_KEYS.TOTAL_REQUESTS) || "0");
-
-  if (totalDailyRequests >= RATE_LIMIT.TOTAL_DAILY_LIMIT) {
+  
+  // 检查总体每日限制
+  if (totalDailyRequests >= RATE_LIMIT.TOTAL_DAILY_LIMIT && !isAdmin) {
     return {
       allowed: false,
       reason: "机器人已达到今日总请求上限，请明天再试。"
     };
   }
-
+  
   // 获取用户每日请求计数
   const userCountKey = KV_KEYS.USER_DAILY_COUNT + userId;
   let userRequestCount = parseInt(await env.TRANS_COLORS_KV.get(userCountKey) || "0");
-
+  
   // 检查用户每日限制
-  if (userRequestCount >= RATE_LIMIT.REQUESTS_PER_USER) {
+  if (userRequestCount >= RATE_LIMIT.REQUESTS_PER_USER && !isAdmin) {
     return {
       allowed: false,
       reason: `您今日的请求次数（${RATE_LIMIT.REQUESTS_PER_USER}次）已用完，请明天再试。`
     };
   }
-
+  
   // 获取用户请求时间戳
   const userTimestampsKey = KV_KEYS.USER_TIMESTAMPS + userId;
   let userTimestamps = JSON.parse(await env.TRANS_COLORS_KV.get(userTimestampsKey) || "[]");
-
+  
   // 清理一分钟前的时间戳
   const oneMinuteAgo = now.getTime() - 60000;
   userTimestamps = userTimestamps.filter(timestamp => timestamp > oneMinuteAgo);
-
-  // 检查每分钟频率限制
-  if (userTimestamps.length >= RATE_LIMIT.REQUESTS_PER_MINUTE) {
+  
+  // 检查每分钟频率限制 - 管理员不受此限制
+  if (userTimestamps.length >= RATE_LIMIT.REQUESTS_PER_MINUTE && !isAdmin) {
     return {
       allowed: false,
       reason: `请求过于频繁，请稍后再试。每分钟最多 ${RATE_LIMIT.REQUESTS_PER_MINUTE} 次请求。`
     };
   }
-
+  
   // 更新计数和时间戳
   userRequestCount++;
   userTimestamps.push(now.getTime());
   totalDailyRequests++;
-
+  
   // 保存更新后的数据
   await env.TRANS_COLORS_KV.put(userCountKey, userRequestCount.toString());
   await env.TRANS_COLORS_KV.put(userTimestampsKey, JSON.stringify(userTimestamps));
   await env.TRANS_COLORS_KV.put(KV_KEYS.TOTAL_REQUESTS, totalDailyRequests.toString());
-
+  
   return {
-    allowed: true
+    allowed: true,
+    isAdmin: isAdmin
   };
 }
 
@@ -281,7 +276,7 @@ async function handleCommand(chatId, command, username, userId, env) {
 
   switch (cmd) {
     case '/start':
-      return sendMessage(chatId, '👋 欢迎使用TransColors LLM！\n\n我是为追求自我定义与突破既定命运的人设计的助手。提供医疗知识、心理支持、身份探索、生活适应、移民信息、职业发展和法律权益等多方面支持。所有信息仅供参考，重要决策请咨询专业人士。', env);
+      return sendMessage(chatId, '👋 欢迎使用TransColors LLM！\n\n我是为追求自我定义与突破既定命运的人设计的助手。提供医疗知识、心理支持、身份探索、生活适应、移民信息、职业发展和法律权益等多方面支持。所有信息仅供参考，重要决策请咨询专业人士。\n\n输入 /help 可查看完整使用指南。', env);
 
     case '/help':
       // 检查是否为管理员
@@ -317,14 +312,18 @@ async function handleCommand(chatId, command, username, userId, env) {
       const userCountKey = KV_KEYS.USER_DAILY_COUNT + userId;
       const dailyCount = parseInt(await env.TRANS_COLORS_KV.get(userCountKey) || "0");
       const remainingCount = RATE_LIMIT.REQUESTS_PER_USER - dailyCount;
-
+      
+      // 获取总使用次数
+      const totalRequests = parseInt(await env.TRANS_COLORS_KV.get(KV_KEYS.TOTAL_REQUESTS) || "0");
+      
       // 检查是否为管理员
       const quotaAdminUsersStr = await env.TRANS_COLORS_KV.get(KV_KEYS.ADMIN_USERS) || "[]";
       const quotaAdminUsers = JSON.parse(quotaAdminUsersStr);
       const isQuotaAdmin = username && quotaAdminUsers.includes(username);
-
-      let quotaText = `📊 使用额度统计\n\n今日已使用: ${dailyCount}次\n剩余额度: ${remainingCount}次\n每日上限: ${RATE_LIMIT.REQUESTS_PER_USER}次\n\n每分钟最多可发送${RATE_LIMIT.REQUESTS_PER_MINUTE}次请求。`;
-
+      
+      // 使用纯文本，避免Markdown解析问题
+      let quotaText = `📊 使用额度统计\n\n今日已使用: ${dailyCount}次\n剩余额度: ${isQuotaAdmin ? "无限制" : remainingCount + "次"}\n\n每分钟最多可发送${RATE_LIMIT.REQUESTS_PER_MINUTE}次请求。\n\n机器人今日总请求数: ${totalRequests}次\n机器人每日总上限: ${RATE_LIMIT.TOTAL_DAILY_LIMIT}次`;
+      
       if (isQuotaAdmin) {
         quotaText += '\n\n🔑 您是管理员，不受配额限制。';
       }
