@@ -51,7 +51,8 @@ const KV_KEYS = {
   USER_DAILY_COUNT: "user_count:",   // 用户每日请求计数前缀
   USER_TIMESTAMPS: "user_ts:",       // 用户请求时间戳前缀
   TOTAL_REQUESTS: "total_requests",  // 总请求数
-  LAST_RESET_DAY: "last_reset_day"   // 上次重置日期
+  LAST_RESET_DAY: "last_reset_day",  // 上次重置日期
+  ADMIN_USERS: "admin_users"         // 管理员用户名列表
 };
 
 // 注意：之前的内存缓存已替换为KV存储
@@ -86,7 +87,19 @@ const MAX_CONTEXT_LENGTH = 4000;
  * 检查并更新用户使用量
  * 返回是否允许此次请求
  */
-async function checkAndUpdateUsage(userId, env) {
+async function checkAndUpdateUsage(userId, username, env) {
+  // 检查用户是否为管理员
+  const adminUsersStr = await env.TRANS_COLORS_KV.get(KV_KEYS.ADMIN_USERS) || "[]";
+  const adminUsers = JSON.parse(adminUsersStr);
+  
+  // 如果用户名在管理员列表中，直接允许请求
+  if (username && adminUsers.includes(username)) {
+    return {
+      allowed: true,
+      isAdmin: true
+    };
+  }
+  
   const now = new Date();
   const currentDay = now.getDate();
   
@@ -233,7 +246,7 @@ async function handleRequest(request, env) {
       }
       
       // 检查使用量限制
-      const usageCheck = await checkAndUpdateUsage(userId, env);
+      const usageCheck = await checkAndUpdateUsage(userId, username, env);
       if (!usageCheck.allowed) {
         return sendMessage(chatId, usageCheck.reason, env);
       }
@@ -243,7 +256,7 @@ async function handleRequest(request, env) {
     }
     
     // 检查使用量限制
-    const usageCheck = await checkAndUpdateUsage(userId, env);
+    const usageCheck = await checkAndUpdateUsage(userId, username, env);
     if (!usageCheck.allowed) {
       return sendMessage(chatId, usageCheck.reason, env);
     }
@@ -261,19 +274,44 @@ async function handleRequest(request, env) {
  */
 async function handleCommand(chatId, command, username, userId, env) {
   const cmd = command.split(' ')[0].toLowerCase();
+  const args = command.split(' ').slice(1);
   
   switch (cmd) {
     case '/start':
       return sendMessage(chatId, '👋 欢迎使用TransColors LLM！\n\n我是为追求自我定义与突破既定命运的人设计的助手。提供医疗知识、心理支持、身份探索、生活适应、移民信息、职业发展和法律权益等多方面支持。所有信息仅供参考，重要决策请咨询专业人士。', env);
     
     case '/help':
-      return sendMessage(chatId, '🌈 *TransColors LLM 使用指南*\n\n*可用命令:*\n/start - 开始对话\n/help - 显示此帮助信息\n/quota - 查看您的使用额度\n/model - 选择使用的模型\n\n您可以直接向我提问，我会尽力提供准确、有用的信息。我的设计初衷是为更广泛的身份认同与生活方式提供支持与资源。\n\n*使用限制:*\n- 每人每日最多30次请求\n- 每分钟最多10次请求\n\n备注：所有信息仅供参考，重要决策请咨询专业人士。', env);
+      // 检查是否为管理员
+      const adminUsersStr = await env.TRANS_COLORS_KV.get(KV_KEYS.ADMIN_USERS) || "[]";
+      const adminUsers = JSON.parse(adminUsersStr);
+      const isAdmin = username && adminUsers.includes(username);
+      
+      let helpText = '🌈 *TransColors LLM 使用指南*\n\n*可用命令:*\n/start - 开始对话\n/help - 显示此帮助信息\n/quota - 查看您的使用额度\n/model - 选择使用的模型\n\n您可以直接向我提问，我会尽力提供准确、有用的信息。我的设计初衷是为更广泛的身份认同与生活方式提供支持与资源。\n\n*使用限制:*\n- 每人每日最多30次请求\n- 每分钟最多10次请求\n\n备注：所有信息仅供参考，重要决策请咨询专业人士。';
+      
+      // 如果是管理员，添加管理员信息
+      if (isAdmin) {
+        helpText += '\n\n🔑 您是管理员，不受请求配额限制。';
+      }
+      
+      return sendMessage(chatId, helpText, env);
     
     case '/quota':
       const userCountKey = KV_KEYS.USER_DAILY_COUNT + userId;
       const dailyCount = parseInt(await env.TRANS_COLORS_KV.get(userCountKey) || "0");
       const remainingCount = RATE_LIMIT.REQUESTS_PER_USER - dailyCount;
-      return sendMessage(chatId, `📊 *使用额度统计*\n\n今日已使用: ${dailyCount}次\n剩余额度: ${remainingCount}次\n每日上限: ${RATE_LIMIT.REQUESTS_PER_USER}次\n\n每分钟最多可发送${RATE_LIMIT.REQUESTS_PER_MINUTE}次请求。`, env);
+      
+      // 检查是否为管理员
+      const quotaAdminUsersStr = await env.TRANS_COLORS_KV.get(KV_KEYS.ADMIN_USERS) || "[]";
+      const quotaAdminUsers = JSON.parse(quotaAdminUsersStr);
+      const isQuotaAdmin = username && quotaAdminUsers.includes(username);
+      
+      let quotaText = `📊 *使用额度统计*\n\n今日已使用: ${dailyCount}次\n剩余额度: ${remainingCount}次\n每日上限: ${RATE_LIMIT.REQUESTS_PER_USER}次\n\n每分钟最多可发送${RATE_LIMIT.REQUESTS_PER_MINUTE}次请求。`;
+      
+      if (isQuotaAdmin) {
+        quotaText += '\n\n🔑 您是管理员，不受配额限制。';
+      }
+      
+      return sendMessage(chatId, quotaText, env);
     
     case '/model':
       const modelArg = command.split(' ')[1]?.toLowerCase();
@@ -293,7 +331,7 @@ async function handleCommand(chatId, command, username, userId, env) {
       }).join('\n');
       
       return sendMessage(chatId, `🤖 *可用模型*\n\n${modelsList}\n\n要选择模型，请使用命令: /model [模型名称]\n例如: /model grok`, env);
-      
+    
     default:
       return new Response('OK');
   }
