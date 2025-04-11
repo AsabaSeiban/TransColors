@@ -1,7 +1,6 @@
 name = "transcolors"
 main = "src/index.js"
-compatibility_date = "2024-03-20"
-compatibility_flags = ["nodejs_compat"]
+compatibility_date = "2024-08-01"
 
 # Workers配置
 [build]
@@ -12,7 +11,7 @@ ip = "localhost"
 port = 8787
 local_protocol = "http"
 
-# 日志配置
+# 触发器配置
 [triggers]
 crons = []
 
@@ -21,8 +20,6 @@ crons = []
 # 以下 API 密钥将从 Cloudflare 控制台中添加
 # TELEGRAM_BOT_TOKEN = ""
 # OPENAI_API_KEY = ""
-# ANTHROPIC_API_KEY = ""
-# GOOGLE_API_KEY = ""
 
 # 开发环境配置
 [env.dev]

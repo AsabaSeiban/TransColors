@@ -1,5 +1,5 @@
 /**
- * MedLLM Telegram Bot Worker
+ * TransColors Telegram Bot Worker
  * 
  * 这个文件实现了一个 Cloudflare Worker，用于：
  * 1. 接收 Telegram Bot 的 Webhook 请求
@@ -8,9 +8,25 @@
  * 4. 返回响应给用户
  */
 
-// 配置常量
-const BOT_TOKEN = TELEGRAM_BOT_TOKEN; // 从环境变量中获取
-const API_KEY = OPENAI_API_KEY; // 从环境变量中获取
+// 导出默认对象（Module Worker格式）
+export default {
+  // 处理fetch事件
+  async fetch(request, env, ctx) {
+    console.log(`收到请求: ${request.url}, 方法: ${request.method}`);
+    try {
+      const response = await handleRequest(request, env);
+      console.log('请求处理完成，返回响应');
+      return response;
+    } catch (error) {
+      console.error(`处理请求时发生严重错误: ${error.message}`, error.stack);
+      return new Response(`服务器错误: ${error.message}`, { status: 500 });
+    }
+  }
+};
+
+// 在Module Worker中，环境变量通过env参数传入，不再使用全局变量
+// const BOT_TOKEN = TELEGRAM_BOT_TOKEN; 
+// const API_KEY = OPENAI_API_KEY;
 
 // 使用量控制配置
 const RATE_LIMIT = {
@@ -38,11 +54,6 @@ const MODELS = {
 // 默认配置
 const DEFAULT_MODEL = "openai";
 const MAX_CONTEXT_LENGTH = 4000;
-
-// 处理传入的请求
-addEventListener('fetch', event => {
-  event.respondWith(handleRequest(event.request));
-});
 
 /**
  * 检查并更新用户使用量
@@ -111,7 +122,11 @@ async function checkAndUpdateUsage(userId) {
 /**
  * 处理 HTTP 请求
  */
-async function handleRequest(request) {
+async function handleRequest(request, env) {
+  // 获取环境变量
+  const BOT_TOKEN = env.TELEGRAM_BOT_TOKEN;
+  const API_KEY = env.OPENAI_API_KEY;
+  
   // 只处理 POST 请求
   if (request.method !== 'POST') {
     return new Response('请使用 POST 请求', { status: 405 });
@@ -134,7 +149,7 @@ async function handleRequest(request) {
     
     // 处理命令 (命令不受频率限制)
     if (text.startsWith('/')) {
-      return handleCommand(chatId, text, username, userId);
+      return handleCommand(chatId, text, username, userId, env);
     }
     
     // 在群聊中，只响应@机器人的消息
@@ -164,21 +179,21 @@ async function handleRequest(request) {
       // 检查使用量限制
       const usageCheck = await checkAndUpdateUsage(userId);
       if (!usageCheck.allowed) {
-        return sendMessage(chatId, usageCheck.reason);
+        return sendMessage(chatId, usageCheck.reason, env);
       }
       
       // 处理普通消息
-      return handleMessage(chatId, cleanText || text, username);
+      return handleMessage(chatId, cleanText || text, username, env);
     }
     
     // 检查使用量限制
     const usageCheck = await checkAndUpdateUsage(userId);
     if (!usageCheck.allowed) {
-      return sendMessage(chatId, usageCheck.reason);
+      return sendMessage(chatId, usageCheck.reason, env);
     }
     
     // 私聊消息，直接处理
-    return handleMessage(chatId, text, username);
+    return handleMessage(chatId, text, username, env);
   } catch (error) {
     console.error('处理请求时出错:', error);
     return new Response('发生错误: ' + error.message, { status: 500 });
@@ -188,12 +203,12 @@ async function handleRequest(request) {
 /**
  * 处理命令
  */
-async function handleCommand(chatId, command, username, userId) {
+async function handleCommand(chatId, command, username, userId, env) {
   const cmd = command.split(' ')[0].toLowerCase();
   
   switch (cmd) {
     case '/start':
-      return sendMessage(chatId, '👋 欢迎使用TransColors LLM！\n\n我是为追求自我定义与突破既定命运的人设计的助手。提供医疗知识、心理支持、身份探索、生活适应、移民信息、职业发展和法律权益等多方面支持。所有信息仅供参考，重要决策请咨询专业人士。');
+      return sendMessage(chatId, '👋 欢迎使用TransColors LLM！\n\n我是为追求自我定义与突破既定命运的人设计的助手。提供医疗知识、心理支持、身份探索、生活适应、移民信息、职业发展和法律权益等多方面支持。所有信息仅供参考，重要决策请咨询专业人士。', env);
     
     case '/help':
       return sendMessage(chatId, '🔍 **使用指南**\n\n' +
@@ -202,7 +217,7 @@ async function handleCommand(chatId, command, username, userId) {
         '/start - 查看介绍\n' +
         '/help - 显示此帮助\n' + 
         '/quota - 查询您的使用限额\n\n' +
-        '私聊直接发问，群聊请@我。所有信息仅供参考，重要决策请咨询专业人士。');
+        '私聊直接发问，群聊请@我。所有信息仅供参考，重要决策请咨询专业人士。', env);
     
     case '/quota':
       // 获取用户的使用情况
@@ -224,41 +239,41 @@ async function handleCommand(chatId, command, username, userId) {
         `📈 **系统总体情况**\n` +
         `• 今日总计使用: ${totalUsed}/${RATE_LIMIT.TOTAL_DAILY_LIMIT} 次\n` +
         `• 系统剩余配额: ${systemRemaining} 次\n\n` +
-        `⏰ 所有配额将在北京时间00:00自动重置`
+        `⏰ 所有配额将在北京时间00:00自动重置`, env
       );
     
     default:
-      return sendMessage(chatId, '未知命令。使用 /help 查看可用命令。');
+      return sendMessage(chatId, '未知命令。使用 /help 查看可用命令。', env);
   }
 }
 
 /**
  * 处理普通消息
  */
-async function handleMessage(chatId, text, username) {
+async function handleMessage(chatId, text, username, env) {
   try {
     // 发送"正在输入"状态
-    await sendChatAction(chatId, 'typing');
+    await sendChatAction(chatId, 'typing', env);
     
     // 调用 LLM 生成回复
-    const response = await callLLM('openai', text);
+    const response = await callLLM('openai', text, env);
     
     // 发送回复
-    return sendMessage(chatId, response);
+    return sendMessage(chatId, response, env);
   } catch (error) {
     console.error('处理消息时出错:', error);
-    return sendMessage(chatId, '抱歉，处理您的请求时发生错误，请稍后再试。');
+    return sendMessage(chatId, '抱歉，处理您的请求时发生错误，请稍后再试。', env);
   }
 }
 
 /**
  * 调用大语言模型 API
  */
-async function callLLM(provider, text) {
+async function callLLM(provider, text, env) {
   const modelConfig = MODELS[provider];
   
   // 系统提示词
-  const systemPrompt = `你是 TransColors 助手，为所有追求自我定义、挑战既定命运的人提供支持和信息。你涵盖以下领域：
+  const systemPrompt = `你是TransColors助手，为所有追求自我定义、挑战既定命运的人提供支持和信息。你涵盖以下领域：
 
 1. 医学知识：药物作用机制、副作用、替代治疗选择
 2. 心理健康：应对变化、自我接纳、寻找支持系统
@@ -278,7 +293,7 @@ async function callLLM(provider, text) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${API_KEY}`
+        'Authorization': `Bearer ${env.OPENAI_API_KEY}`
       },
       body: JSON.stringify({
         model: modelConfig.model,
@@ -293,13 +308,13 @@ async function callLLM(provider, text) {
     
     const data = await response.json();
     if (!response.ok) {
-      throw new Error(`OpenAI API 错误: ${data.error?.message || JSON.stringify(data)}`);
+      throw new Error(`API 错误: ${data.error?.message || JSON.stringify(data)}`);
     }
     
     return data.choices[0].message.content;
     
   } catch (error) {
-    console.error(`调用 OpenAI API 时出错:`, error);
+    console.error(`调用 API 时出错:`, error);
     throw error;
   }
 }
@@ -307,9 +322,9 @@ async function callLLM(provider, text) {
 /**
  * 发送消息到 Telegram
  */
-async function sendMessage(chatId, text) {
+async function sendMessage(chatId, text, env) {
   try {
-    const response = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+    const response = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -336,9 +351,9 @@ async function sendMessage(chatId, text) {
 /**
  * 发送聊天动作到 Telegram（例如"正在输入"）
  */
-async function sendChatAction(chatId, action) {
+async function sendChatAction(chatId, action, env) {
   try {
-    await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendChatAction`, {
+    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendChatAction`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
