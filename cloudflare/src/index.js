@@ -162,6 +162,40 @@ async function checkAndUpdateUsage(userId, username, env) {
   };
 }
 
+  // 新增流式智能更新控制器
+  class UpdateController {
+    constructor() {
+      this.buffer = [];
+      this.lastUpdate = Date.now();
+      this.delay = 800;
+      this.minChars = 40;
+    }
+  
+    shouldUpdate(newContent) {
+      const timeDiff = Date.now() - this.lastUpdate;
+      const lengthDiff = newContent.length - (this.lastContent?.length || 0);
+      
+      return (
+        lengthDiff >= this.minChars ||
+        timeDiff > this.delay ||
+        newContent.endsWith('\n') ||
+        newContent.endsWith('。')
+      );
+    }
+  
+    async triggerUpdate(content, callback) {
+      this.lastContent = content;
+      this.lastUpdate = Date.now();
+      this.delay = Math.min(1500, this.delay * 1.2); // 动态增加延迟
+      await callback(content);
+    }
+  
+    reset() {
+      this.buffer = [];
+      this.delay = 800;
+    }
+  }
+
 // 在handleRequest中添加结构化日志
 async function handleRequest(request, env) {
   // 获取环境变量
@@ -427,7 +461,13 @@ async function handleCommand(chatId, command, username, userId, env) {
  * 处理普通消息
  */
 async function handleMessage(chatId, text, username, userId, env) {
+  let placeholderMessageId = null;
+  
   try {
+    // 初始化流式占位符
+    const placeholder = await sendMessageGetMessageid(chatId, "⏳ 正在思考中...", env);
+    placeholderMessageId = placeholder.message_id;
+    
     // 发送"正在输入"状态
     await sendChatAction(chatId, 'typing', env);
 
@@ -459,20 +499,38 @@ async function handleMessage(chatId, text, username, userId, env) {
       message_text: text.substring(0, 100), // 截断过长消息
       timestamp: new Date().toISOString()
     });
+    // 流式处理控制器
+    const updateCtrl = new UpdateController();
+    let finalAnswer = '';
+      
+    // 执行API调用
+    finalAnswer = await callLLM(
+      modelProvider,
+      text,
+      messages,
+      env,
+      async (partial) => {
+        finalAnswer = partial;
+        if (updateCtrl.shouldUpdate(partial)) {
+          await updateCtrl.triggerUpdate(partial, async (content) => {
+            await editMessageText(chatId, placeholderMessageId, content, env);
+          });
+        }
+      }
+    );
 
-    // 调用 LLM 生成回复
-    const response = await callLLM(modelProvider, text, messages, env);
+    // 最终更新消息
+    await editMessageText(chatId, placeholderMessageId, finalAnswer, env);
     
     // 添加助手回复到历史
-    messages.push({role: "assistant", content: response});
+    messages.push({role: "assistant", content: finalAnswer});
     
     // 保存更新后的历史(添加7天TTL)
     await env.TRANS_COLORS_KV.put(historyKey, JSON.stringify(messages), {
       expirationTtl: KV_KEYS.HISTORY_TTL
     });
+    return new Response('OK');
 
-    // 发送回复
-    return sendMessage(chatId, response, env);
   } catch (error) {
     // 记录详细的错误信息
     console.error({
@@ -487,16 +545,27 @@ async function handleMessage(chatId, text, username, userId, env) {
       timestamp: new Date().toISOString()
     });
 
-    return sendMessage(chatId, '抱歉，处理您的请求时发生错误，请稍后再试。', env);
+    if (placeholderMessageId) {
+      await editMessageText(chatId, placeholderMessageId, "⚠️响应生成失败，请稍后重试", env);
+    };
+    try {
+      await sendMessage(chatId, '抱歉，处理您的请求时发生错误，请稍后再试。', env);
+    } catch (sendError) {
+      console.error('发送错误消息时出错:', sendError);
+    }
+
+    return new Response('OK'); // 确保始终返回 Response 对象
+
   }
 }
-
 /**
  * 调用大语言模型 API
  */
-async function callLLM(provider, text, messages, env) {
+async function callLLM(provider, text, messages, env, onData) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30000);
   const modelConfig = MODELS[provider];
-
+  
   // 系统提示词
   const systemPrompt = `你是TransColors助手，为所有追求自我定义、挑战既定命运的人提供支持和信息。你涵盖以下领域：
 
@@ -512,16 +581,17 @@ async function callLLM(provider, text, messages, env) {
 
 回答时保持开放、尊重和专业，不预设任何人的身份或选择。承认每个人的经历和需求都是独特的，避免给出一刀切的建议。提供信息时注明这些仅供参考，关键决策应结合个人情况和专业咨询。支持每个人打破常规、寻找自己道路的勇气。`;
 
-  try {
-    // 根据提供商选择API密钥
-    let apiKey;
-    if (provider === 'grok') {
-      apiKey = env.XAI_API_KEY;
-    } else {
-      apiKey = env.OPENAI_API_KEY;
-    }
+  // 根据提供商选择API密钥
+  let apiKey;
+  if (provider === 'grok') {
+    apiKey = env.XAI_API_KEY;
+  } else if(provider === 'openai') {
+    apiKey = env.OPENAI_API_KEY;
+  }
 
-    // 调用 API
+
+  // 调用 API
+  try {
     const response = await fetch(modelConfig.endpoint, {
       method: 'POST',
       headers: {
@@ -536,40 +606,48 @@ async function callLLM(provider, text, messages, env) {
         ],
         temperature: modelConfig.temperature,
         max_tokens: modelConfig.max_tokens,
-        stream: false
-      })
-    });
+        stream: true
+      }),
+      signal: controller.signal
+  });
 
-    // 解析响应，不记录原始响应和解析过程
-    const data = await response.json();
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+    let answer = '';
 
-    if (!response.ok) {
-      throw new Error(`API 错误: ${data.error?.message || JSON.stringify(data)}`);
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const data = line.slice(6).trim();
+        if (data === '[DONE]') break;
+
+        try {
+          const json = JSON.parse(data);
+          const chunk = json.choices[0]?.delta?.content || '';
+          if (chunk) {
+            answer += chunk;
+            await onData(answer); // 触发更新
+          }
+        } catch (e) {
+          console.warn("JSON parse error:", e);
+        }
+      }
     }
 
-    // 检查响应数据格式
-    if (!data.choices || !Array.isArray(data.choices) || data.choices.length === 0) {
-      throw new Error(`无效的API响应格式: ${JSON.stringify(data)}`);
+    return answer;
+
+ } catch (error) {
+    if (error.name === 'AbortError') {
+      throw new Error("API响应超时");
     }
-
-    if (!data.choices[0].message || !data.choices[0].message.content) {
-      throw new Error(`响应中缺少消息内容: ${JSON.stringify(data)}`);
-    }
-
-    // API调用结果记录
-    console.log({
-      event: "机器人接收到大模型API响应",
-      provider: provider,
-      response_length: data.choices[0].message.content.length,
-      tokens_used: data.usage?.total_tokens || 0,
-      model: modelConfig.model,
-      message_text: text.substring(0, 100), // 截断过长消息
-      timestamp: new Date().toISOString()
-    });
-
-    return data.choices[0].message.content;
-
-  } catch (error) {
     // API错误记录
     console.error({
       event: "大模型API响应报错",
@@ -582,8 +660,28 @@ async function callLLM(provider, text, messages, env) {
       endpoint: modelConfig.endpoint,
       timestamp: new Date().toISOString()
     });
-
     throw error;
+  } finally {
+    clearTimeout(timeoutId);
+}
+}
+
+/**
+ * 编辑已发送的 Telegram 消息
+ */
+async function editMessageText(chatId, messageId, text, env) {
+  try {
+    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        message_id: messageId,
+        text: text
+      })
+    });
+  } catch (error) {
+    console.error("Edit message failed:", error);
   }
 }
 
@@ -616,6 +714,36 @@ async function sendMessage(chatId, text, env) {
   }
 }
 
+async function sendMessageGetMessageid(chatId, text, env) {
+  try {
+    const response = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: text,
+        parse_mode: 'Markdown'
+      })
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      console.error('发送Telegram消息失败:', error);
+      throw new Error('发送消息失败');
+    }
+
+    const data = await response.json();
+    return data.result; // 返回发送消息的结果，包含 message_id
+
+  } catch (error) {
+    console.error('发送Telegram消息时出错:', error.message);
+    throw error;
+  }
+}
+
+
 /**
  * 发送聊天动作到 Telegram（例如"正在输入"）
  */
@@ -633,5 +761,6 @@ async function sendChatAction(chatId, action, env) {
     });
   } catch (error) {
     // 不记录chatAction错误，这不是关键操作
+    console.error('发送ChatAction时出错:', error.message);
   }
-} 
+}  
