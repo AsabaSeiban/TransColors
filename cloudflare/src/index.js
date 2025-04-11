@@ -58,14 +58,14 @@ const userModelPreferences = {};
 const MODELS = {
   openai: {
     model: "gpt-4o",
-    temperature: 0.7,
+    temperature: 0.5,
     max_tokens: 4096,
     endpoint: "https://api.openai.com/v1/chat/completions"
   },
   grok: {
     model: "grok-3-latest",
-    temperature: 0.3, // 降低温度使回答更具体
-    max_tokens: 4096, // 增加长度以获取更详细回答
+    temperature: 0.5,
+    max_tokens: 4096,
     endpoint: "https://api.x.ai/v1/chat/completions" // Grok API端点
   }
 };
@@ -250,7 +250,7 @@ async function handleCommand(chatId, command, username, userId, env) {
       // 如果提供了模型参数且它是有效的模型
       if (modelArg && MODELS[modelArg]) {
         userModelPreferences[userId] = modelArg;
-        return sendMessage(chatId, `✅ 您的默认模型已设置为: ${modelArg}\n\n当前模型参数:\n- temperature: ${MODELS[modelArg].temperature}\n- 最大令牌数: ${MODELS[modelArg].max_tokens}`, env);
+        return sendMessage(chatId, `✅ 您的默认模型已设置为: ${modelArg}\n\n当前模型参数:\n- temperature(越低越理性, 越高越感性): ${MODELS[modelArg].temperature}\n- 最大令牌数: ${MODELS[modelArg].max_tokens}`, env);
       } 
       
       // 否则，显示可用模型列表
