@@ -2,6 +2,11 @@ name = "transcolors"
 main = "src/index.js"
 compatibility_date = "2024-08-01"
 
+# Workers日志配置 (Beta)
+[observability]
+enabled = true
+head_sampling_rate = 1 # 记录所有请求的日志 (100%)
+
 # Workers配置
 [build]
 command = ""

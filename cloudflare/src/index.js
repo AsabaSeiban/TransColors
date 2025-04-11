@@ -12,17 +12,41 @@
 export default {
   // 处理fetch事件
   async fetch(request, env, ctx) {
-    console.log(`收到请求: ${request.url}, 方法: ${request.method}`);
+    // 使用结构化JSON日志
+    console.log({
+      event: "request_received",
+      url: request.url,
+      method: request.method,
+      cf_ray: request.headers.get("cf-ray") || "unknown"
+    });
+
     try {
       const response = await handleRequest(request, env);
-      console.log('请求处理完成，返回响应');
+      
+      // 记录响应状态
+      console.log({
+        event: "request_completed",
+        status: response.status,
+        duration_ms: Date.now() - ctx.waitUntil.START_TIME || 0
+      });
+      
       return response;
     } catch (error) {
-      console.error(`处理请求时发生严重错误: ${error.message}`, error.stack);
+      // 记录错误详情
+      console.error({
+        event: "request_error", 
+        error_message: error.message,
+        error_stack: error.stack,
+        url: request.url
+      });
+      
       return new Response(`服务器错误: ${error.message}`, { status: 500 });
     }
   }
 };
+
+// 添加时间戳
+Object.defineProperty(globalThis, "START_TIME", { value: Date.now() });
 
 // 在Module Worker中，环境变量通过env参数传入，不再使用全局变量
 // const BOT_TOKEN = TELEGRAM_BOT_TOKEN; 
@@ -119,9 +143,7 @@ async function checkAndUpdateUsage(userId) {
   };
 }
 
-/**
- * 处理 HTTP 请求
- */
+// 在handleRequest中添加结构化日志
 async function handleRequest(request, env) {
   // 获取环境变量
   const BOT_TOKEN = env.TELEGRAM_BOT_TOKEN;
@@ -146,6 +168,16 @@ async function handleRequest(request, env) {
     const userId = update.message.from.id;
     const text = update.message.text || '';
     const username = update.message.from.username || 'user';
+    
+    // 记录接收到的消息 (使用结构化日志)
+    console.log({
+      event: "telegram_message",
+      chat_id: chatId,
+      chat_type: chatType,
+      user_id: userId,
+      username: username,
+      message_text: text.substring(0, 100) // 截断过长消息
+    });
     
     // 处理命令 (命令不受频率限制)
     if (text.startsWith('/')) {
@@ -272,6 +304,14 @@ async function handleMessage(chatId, text, username, env) {
 async function callLLM(provider, text, env) {
   const modelConfig = MODELS[provider];
   
+  // 记录API调用
+  console.log({
+    event: "api_call_start",
+    provider: provider,
+    model: modelConfig.model,
+    text_length: text.length
+  });
+  
   // 系统提示词
   const systemPrompt = `你是TransColors助手，为所有追求自我定义、挑战既定命运的人提供支持和信息。你涵盖以下领域：
 
@@ -311,10 +351,25 @@ async function callLLM(provider, text, env) {
       throw new Error(`API 错误: ${data.error?.message || JSON.stringify(data)}`);
     }
     
+    // API调用结果记录
+    console.log({
+      event: "api_call_success",
+      provider: provider,
+      response_length: data.choices[0].message.content.length,
+      tokens_used: data.usage?.total_tokens || 0
+    });
+    
     return data.choices[0].message.content;
     
   } catch (error) {
-    console.error(`调用 API 时出错:`, error);
+    // API错误记录
+    console.error({
+      event: "api_call_error",
+      provider: provider,
+      error_message: error.message,
+      error_type: error.name
+    });
+    
     throw error;
   }
 }
