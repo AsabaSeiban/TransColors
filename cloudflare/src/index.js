@@ -13,28 +13,14 @@ export default {
   // 处理fetch事件
   async fetch(request, env, ctx) {
     // 使用结构化JSON日志
-    console.log({
-      event: "request_received",
-      url: request.url,
-      method: request.method,
-      cf_ray: request.headers.get("cf-ray") || "unknown"
-    });
 
     try {
       const response = await handleRequest(request, env);
-      
-      // 记录响应状态
-      console.log({
-        event: "request_completed",
-        status: response.status,
-        duration_ms: Date.now() - ctx.waitUntil.START_TIME || 0
-      });
-      
       return response;
     } catch (error) {
       // 记录错误详情
       console.error({
-        event: "request_error", 
+        event: "服务器错误",
         error_message: error.message,
         error_stack: error.stack,
         url: request.url
@@ -180,7 +166,7 @@ async function handleRequest(request, env) {
     
     // 记录接收到的消息 (使用结构化日志)
     console.log({
-      event: "telegram_message",
+      event: "机器人接受消息",
       chat_id: chatId,
       chat_type: chatType,
       user_id: userId,
@@ -207,7 +193,6 @@ async function handleRequest(request, env) {
       
       // 如果既没有@机器人，也不是回复机器人的消息，则忽略
       if (!isTagged && !isReply) {
-        console.log(`群聊消息被过滤: ${text}`);
         return new Response('OK');
       }
       
@@ -295,34 +280,29 @@ async function handleMessage(chatId, text, username, userId, env) {
     
     // 记录开始处理消息
     console.log({
-      event: "message_processing_start",
+      event: "机器人请求大模型API",
       chat_id: chatId,
       user_id: userId,
       username: username,
       text_length: text.length,
-      model_provider: modelProvider
+      model: modelProvider,
+      message_text: text.substring(0, 100), // 截断过长消息
+      timestamp: new Date().toISOString()
     });
     
     // 调用 LLM 生成回复
     const response = await callLLM(modelProvider, text, env);
-    
-    // 记录消息处理成功
-    console.log({
-      event: "message_processing_success",
-      chat_id: chatId,
-      user_id: userId,
-      response_length: response.length
-    });
     
     // 发送回复
     return sendMessage(chatId, response, env);
   } catch (error) {
     // 记录详细的错误信息
     console.error({
-      event: "message_processing_error",
+      event: "机器人请求大模型API报错",
       chat_id: chatId,
       user_id: userId,
       username: username,
+      message_text: text.substring(0, 100), // 截断过长消息
       error_message: error.message,
       error_type: error.name,
       error_stack: error.stack,
@@ -338,15 +318,6 @@ async function handleMessage(chatId, text, username, userId, env) {
  */
 async function callLLM(provider, text, env) {
   const modelConfig = MODELS[provider];
-  
-  // 记录API调用
-  console.log({
-    event: "api_call_start",
-    provider: provider,
-    model: modelConfig.model,
-    text_length: text.length,
-    endpoint: modelConfig.endpoint
-  });
   
   // 系统提示词
   const systemPrompt = `你是TransColors助手，为所有追求自我定义、挑战既定命运的人提供支持和信息。你涵盖以下领域：
@@ -391,35 +362,8 @@ async function callLLM(provider, text, env) {
       })
     });
     
-    // 记录原始响应
-    const responseText = await response.text();
-    console.log({
-      event: "api_raw_response",
-      provider: provider,
-      status: response.status,
-      response_text: responseText
-    });
-    
-    let data;
-    try {
-      data = JSON.parse(responseText);
-    } catch (parseError) {
-      console.error({
-        event: "api_response_parse_error",
-        provider: provider,
-        error: parseError.message,
-        response_text: responseText
-      });
-      throw new Error(`无法解析API响应: ${parseError.message}`);
-    }
-    
-    // 记录API响应
-    console.log({
-      event: "api_response",
-      provider: provider,
-      status: response.status,
-      response_data: data
-    });
+    // 解析响应，不记录原始响应和解析过程
+    const data = await response.json();
     
     if (!response.ok) {
       throw new Error(`API 错误: ${data.error?.message || JSON.stringify(data)}`);
@@ -436,10 +380,13 @@ async function callLLM(provider, text, env) {
     
     // API调用结果记录
     console.log({
-      event: "api_call_success",
+      event: "机器人接收到大模型API响应",
       provider: provider,
       response_length: data.choices[0].message.content.length,
-      tokens_used: data.usage?.total_tokens || 0
+      tokens_used: data.usage?.total_tokens || 0,
+      model: modelConfig.model,
+      message_text: text.substring(0, 100), // 截断过长消息
+      timestamp: new Date().toISOString()
     });
     
     return data.choices[0].message.content;
@@ -447,11 +394,15 @@ async function callLLM(provider, text, env) {
   } catch (error) {
     // API错误记录
     console.error({
-      event: "api_call_error",
+      event: "大模型API响应报错",
       provider: provider,
       error_message: error.message,
       error_type: error.name,
-      error_stack: error.stack
+      error_stack: error.stack,
+      model: modelConfig.model,
+      message_text: text.substring(0, 100), // 截断过长消息
+      endpoint: modelConfig.endpoint,
+      timestamp: new Date().toISOString()
     });
     
     throw error;
@@ -477,12 +428,12 @@ async function sendMessage(chatId, text, env) {
     
     if (!response.ok) {
       const error = await response.json();
-      console.error('发送 Telegram 消息失败:', error);
+      console.error('发送Telegram消息失败:', error);
     }
     
     return new Response('OK');
   } catch (error) {
-    console.error('发送 Telegram 消息时出错:', error);
+    console.error('发送Telegram消息时出错:', error.message);
     return new Response('发送消息失败: ' + error.message, { status: 500 });
   }
 }
@@ -503,6 +454,6 @@ async function sendChatAction(chatId, action, env) {
       })
     });
   } catch (error) {
-    console.error('发送聊天动作时出错:', error);
+    // 不记录chatAction错误，这不是关键操作
   }
 } 
