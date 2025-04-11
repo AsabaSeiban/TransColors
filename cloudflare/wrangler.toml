@@ -1,4 +1,4 @@
-name = "med-llm-telegram-bot"
+name = "transcolors"
 main = "src/index.js"
 compatibility_date = "2024-03-20"
 

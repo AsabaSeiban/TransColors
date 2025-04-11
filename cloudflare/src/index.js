@@ -10,7 +10,20 @@
 
 // 配置常量
 const BOT_TOKEN = TELEGRAM_BOT_TOKEN; // 从环境变量中获取
-const OPENAI_API_KEY = OPENAI_API_KEY; // 从环境变量中获取
+const API_KEY = OPENAI_API_KEY; // 从环境变量中获取
+
+// 使用量控制配置
+const RATE_LIMIT = {
+  REQUESTS_PER_USER: 30,     // 每个用户每天的请求上限
+  REQUESTS_PER_MINUTE: 10,    // 每个用户每分钟的请求上限
+  TOTAL_DAILY_LIMIT: 1000     // 所有用户每天的总请求上限
+};
+
+// 内存缓存（实际应用中应使用KV存储）
+const userRequestCounts = {};       // 用户每日请求计数
+const userRequestTimestamps = {};   // 用户请求时间戳记录
+let totalDailyRequests = 0;         // 总体每日请求计数
+let lastResetDay = new Date().getDate(); // 上次重置计数的日期
 
 // 模型配置
 const MODELS = {
@@ -32,6 +45,70 @@ addEventListener('fetch', event => {
 });
 
 /**
+ * 检查并更新用户使用量
+ * 返回是否允许此次请求
+ */
+async function checkAndUpdateUsage(userId) {
+  const now = new Date();
+  const currentDay = now.getDate();
+  
+  // 检查是否需要重置每日计数
+  if (currentDay !== lastResetDay) {
+    // 重置所有计数器
+    Object.keys(userRequestCounts).forEach(key => userRequestCounts[key] = 0);
+    totalDailyRequests = 0;
+    lastResetDay = currentDay;
+  }
+  
+  // 初始化用户的计数和时间戳数组
+  if (!userRequestCounts[userId]) {
+    userRequestCounts[userId] = 0;
+  }
+  if (!userRequestTimestamps[userId]) {
+    userRequestTimestamps[userId] = [];
+  }
+  
+  // 检查总体每日限制
+  if (totalDailyRequests >= RATE_LIMIT.TOTAL_DAILY_LIMIT) {
+    return {
+      allowed: false,
+      reason: "机器人已达到今日总请求上限，请明天再试。"
+    };
+  }
+  
+  // 检查用户每日限制
+  if (userRequestCounts[userId] >= RATE_LIMIT.REQUESTS_PER_USER) {
+    return {
+      allowed: false,
+      reason: `您今日的请求次数（${RATE_LIMIT.REQUESTS_PER_USER}次）已用完，请明天再试。`
+    };
+  }
+  
+  // 清理一分钟前的时间戳
+  const oneMinuteAgo = now.getTime() - 60000;
+  userRequestTimestamps[userId] = userRequestTimestamps[userId].filter(
+    timestamp => timestamp > oneMinuteAgo
+  );
+  
+  // 检查每分钟频率限制
+  if (userRequestTimestamps[userId].length >= RATE_LIMIT.REQUESTS_PER_MINUTE) {
+    return {
+      allowed: false,
+      reason: `请求过于频繁，请稍后再试。每分钟最多 ${RATE_LIMIT.REQUESTS_PER_MINUTE} 次请求。`
+    };
+  }
+  
+  // 更新计数和时间戳
+  userRequestCounts[userId]++;
+  userRequestTimestamps[userId].push(now.getTime());
+  totalDailyRequests++;
+  
+  return {
+    allowed: true
+  };
+}
+
+/**
  * 处理 HTTP 请求
  */
 async function handleRequest(request) {
@@ -50,15 +127,48 @@ async function handleRequest(request) {
     }
 
     const chatId = update.message.chat.id;
+    const chatType = update.message.chat.type;
+    const userId = update.message.from.id;
     const text = update.message.text || '';
     const username = update.message.from.username || 'user';
-
-    // 处理命令
+    
+    // 处理命令 (命令不受频率限制)
     if (text.startsWith('/')) {
-      return handleCommand(chatId, text, username);
+      return handleCommand(chatId, text, username, userId);
     }
-
-    // 处理普通消息
+    
+    // 在群聊中，只响应@机器人的消息
+    if (chatType !== 'private') {
+      // 获取机器人信息
+      const botInfo = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getMe`).then(r => r.json());
+      const botUsername = botInfo.result.username;
+      
+      // 检查消息是否@了机器人
+      if (!text.includes('@' + botUsername) && !update.message.reply_to_message?.from?.username === botUsername) {
+        // 未@机器人，不回复
+        return new Response('OK');
+      }
+      
+      // 移除@部分
+      const cleanText = text.replace('@' + botUsername, '').trim();
+      
+      // 检查使用量限制
+      const usageCheck = await checkAndUpdateUsage(userId);
+      if (!usageCheck.allowed) {
+        return sendMessage(chatId, usageCheck.reason);
+      }
+      
+      // 处理普通消息
+      return handleMessage(chatId, cleanText || text, username);
+    }
+    
+    // 检查使用量限制
+    const usageCheck = await checkAndUpdateUsage(userId);
+    if (!usageCheck.allowed) {
+      return sendMessage(chatId, usageCheck.reason);
+    }
+    
+    // 私聊消息，直接处理
     return handleMessage(chatId, text, username);
   } catch (error) {
     console.error('处理请求时出错:', error);
@@ -69,19 +179,44 @@ async function handleRequest(request) {
 /**
  * 处理命令
  */
-async function handleCommand(chatId, command, username) {
+async function handleCommand(chatId, command, username, userId) {
   const cmd = command.split(' ')[0].toLowerCase();
   
   switch (cmd) {
     case '/start':
-      return sendMessage(chatId, '👋 欢迎使用TransColors TransLLM Bot！\n\n我可以帮助你查询关于各种信息，包括性别转换、移民、生活方式改变等。');
+      return sendMessage(chatId, '👋 欢迎使用TransColors LLM！\n\n我是为追求自我定义与突破既定命运的人设计的助手。提供医疗知识、心理支持、身份探索、生活适应、移民信息、职业发展和法律权益等多方面支持。所有信息仅供参考，重要决策请咨询专业人士。');
     
     case '/help':
-      return sendMessage(chatId, '🔍 **使用帮助**\n\n' +
-        '直接向我发送问题，我会尽力回答。我可以帮助你了解多个领域的知识。\n\n' +
-        '**可用命令**：\n' +
-        '/start - 开始使用\n' +
-        '/help - 显示帮助信息');
+      return sendMessage(chatId, '🔍 **使用指南**\n\n' +
+        '我能回答关于医疗（包括HRT详情）、心理健康、社会适应、移民、职业和法律等方面的问题。\n\n' +
+        '**命令**：\n' +
+        '/start - 查看介绍\n' +
+        '/help - 显示此帮助\n' + 
+        '/quota - 查询您的使用限额\n\n' +
+        '私聊直接发问，群聊请@我。所有信息仅供参考，重要决策请咨询专业人士。');
+    
+    case '/quota':
+      // 获取用户的使用情况
+      const userCount = userRequestCounts[userId] || 0;
+      const userMinuteCount = (userRequestTimestamps[userId] || []).length;
+      
+      // 计算剩余配额
+      const dailyRemaining = RATE_LIMIT.REQUESTS_PER_USER - userCount;
+      const minuteRemaining = RATE_LIMIT.REQUESTS_PER_MINUTE - userMinuteCount;
+      
+      // 获取系统总体使用情况
+      const totalUsed = totalDailyRequests || 0;
+      const systemRemaining = RATE_LIMIT.TOTAL_DAILY_LIMIT - totalUsed;
+      
+      return sendMessage(chatId, `📊 **您的使用情况**\n\n` +
+        `• 今日已使用: ${userCount}/${RATE_LIMIT.REQUESTS_PER_USER} 次\n` +
+        `• 当前分钟已使用: ${userMinuteCount}/${RATE_LIMIT.REQUESTS_PER_MINUTE} 次\n` +
+        `• 您今日剩余: ${dailyRemaining} 次\n\n` +
+        `📈 **系统总体情况**\n` +
+        `• 今日总计使用: ${totalUsed}/${RATE_LIMIT.TOTAL_DAILY_LIMIT} 次\n` +
+        `• 系统剩余配额: ${systemRemaining} 次\n\n` +
+        `⏰ 所有配额将在北京时间00:00自动重置`
+      );
     
     default:
       return sendMessage(chatId, '未知命令。使用 /help 查看可用命令。');
@@ -134,7 +269,7 @@ async function callLLM(provider, text) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${OPENAI_API_KEY}`
+        'Authorization': `Bearer ${API_KEY}`
       },
       body: JSON.stringify({
         model: modelConfig.model,
