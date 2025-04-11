@@ -41,6 +41,12 @@ const RATE_LIMIT = {
   TOTAL_DAILY_LIMIT: 1000     // 所有用户每天的总请求上限
 };
 
+// 对话历史配置
+const HISTORY_CONFIG = {
+  MAX_ROUNDS: 10,             // 最多保存10轮对话
+  TTL_DAYS: 7                 // 对话历史保存7天
+};
+
 // KV键名前缀
 const KV_KEYS = {
   USER_MODEL: "user_model:",         // 用户模型偏好前缀
@@ -48,7 +54,9 @@ const KV_KEYS = {
   USER_TIMESTAMPS: "user_ts:",       // 用户请求时间戳前缀
   TOTAL_REQUESTS: "total_requests",  // 总请求数
   LAST_RESET_DAY: "last_reset_day",  // 上次重置日期
-  ADMIN_USERS: "admin_users"         // 管理员用户名列表
+  ADMIN_USERS: "admin_users",        // 管理员用户名列表
+  USER_MESSAGES: "user_messages:",   // 用户对话历史
+  HISTORY_TTL: 86400 * HISTORY_CONFIG.TTL_DAYS  // 对话历史保存时间
 };
 
 // 模型配置
@@ -180,30 +188,11 @@ async function handleRequest(request, env) {
     const text = update.message.text || '';
     const username = update.message.from.username || 'user';
 
-    // 检查是否为非文本消息（图片、视频、文件等）
-    if (!text && (update.message.photo || update.message.video || 
-        update.message.document || update.message.audio || 
-        update.message.voice || update.message.sticker || 
-        update.message.animation)) {
-      
-      // 在群聊中，只有@机器人或回复机器人的非文本消息才回复
-      if (chatType !== 'private') {
-        // 获取机器人信息
-        const botInfo = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getMe`).then(r => r.json());
-        const botUsername = botInfo.result.username;
-        
-        // 检查是否@了机器人或回复机器人的消息
-        const isReply = update.message.reply_to_message && 
-                        update.message.reply_to_message.from && 
-                        update.message.reply_to_message.from.username === botUsername;
-                        
-        // 如果既没有@机器人，也不是回复机器人的消息，则静默忽略
-        if (!isReply) {
-          return new Response('OK');
-        }
-      }
-      
-      return sendMessage(chatId, "抱歉，我目前只能处理文字消息。请发送文字内容与我交流。", env);
+    // 获取机器人信息(仅在非私聊时获取)
+    let botUsername = null;
+    if (chatType !== 'private') {
+      const botInfo = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getMe`).then(r => r.json());
+      botUsername = botInfo.result.username;
     }
 
     console.log({
@@ -215,42 +204,45 @@ async function handleRequest(request, env) {
       message_text: text.substring(0, 100) // 截断过长消息
     });
 
-    // 处理命令 (命令不受频率限制)
-    if (text.startsWith('/')) {
-      return handleCommand(chatId, text, username, userId, env);
+    // 检查是否为非文本消息（图片、视频、文件等）
+    if (!text && (update.message.photo || update.message.video || 
+        update.message.document || update.message.audio || 
+        update.message.voice || update.message.sticker || 
+        update.message.animation)) {
+      
+      // 在群聊中，只有@机器人或回复机器人的非文本消息才回复
+      if (chatType !== 'private') {
+        // 检查是否回复机器人的消息
+        const isReply = update.message.reply_to_message && 
+                        update.message.reply_to_message.from && 
+                        update.message.reply_to_message.from.username === botUsername;
+                        
+        // 如果不是回复机器人的消息，则静默忽略
+        if (!isReply) {
+          return new Response('OK');
+        }
+      }
+      
+      return sendMessage(chatId, "抱歉，我目前只能处理文字消息。请发送文字内容与我交流。", env);
     }
 
-    // 在群聊中，只响应@机器人的消息
+    // 群聊中检查是否需要回复
     if (chatType !== 'private') {
-      // 获取机器人信息
-      const botInfo = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getMe`).then(r => r.json());
-      const botUsername = botInfo.result.username;
-
-      // 检查消息是否@了机器人
-      const isTagged = text.includes('@' + botUsername);
-      const isReply = update.message.reply_to_message &&
-                      update.message.reply_to_message.from &&
-                      update.message.reply_to_message.from.username === botUsername;
-
-      // 如果既没有@机器人，也不是回复机器人的消息，则忽略
-      if (!isTagged && !isReply) {
+      const shouldRespond = shouldRespondInGroup(text, update, botUsername);
+      if (!shouldRespond) {
         return new Response('OK');
       }
+    }
 
-      // 移除@部分
-      let cleanText = text;
-      if (isTagged) {
-        cleanText = text.replace('@' + botUsername, '').trim();
-      }
+    // 清理文本中的@部分
+    let cleanText = text;
+    if (chatType !== 'private' && text.includes('@' + botUsername)) {
+      cleanText = text.replace('@' + botUsername, '').trim();
+    }
 
-      // 检查使用量限制
-      const usageCheck = await checkAndUpdateUsage(userId, username, env);
-      if (!usageCheck.allowed) {
-        return sendMessage(chatId, usageCheck.reason, env);
-      }
-
-      // 处理普通消息
-      return handleMessage(chatId, cleanText || text, username, userId, env);
+    // 处理命令 (命令不受频率限制)
+    if (cleanText.startsWith('/')) {
+      return handleCommand(chatId, cleanText, username, userId, env);
     }
 
     // 检查使用量限制
@@ -259,8 +251,8 @@ async function handleRequest(request, env) {
       return sendMessage(chatId, usageCheck.reason, env);
     }
 
-    // 私聊消息，直接处理
-    return handleMessage(chatId, text, username, userId, env);
+    // 处理普通消息
+    return handleMessage(chatId, cleanText || text, username, userId, env);
   } catch (error) {
     console.error('处理请求时出错:', error);
     return new Response('发生错误: ' + error.message, { status: 500 });
@@ -268,10 +260,39 @@ async function handleRequest(request, env) {
 }
 
 /**
+ * 检查群聊中是否需要响应
+ */
+function shouldRespondInGroup(text, update, botUsername) {
+  // 检查是否@了机器人
+  const isTagged = text.includes('@' + botUsername);
+  
+  // 检查是否回复了机器人消息
+  const isReply = update.message.reply_to_message && 
+                  update.message.reply_to_message.from && 
+                  update.message.reply_to_message.from.username === botUsername;
+  
+  // 检查命令是否明确@了当前机器人
+  if (text.startsWith('/')) {
+    const fullCommand = text.split(' ')[0];
+    if (fullCommand.includes('@')) {
+      return fullCommand.split('@')[1] === botUsername;
+    }
+    return false; // 群聊中不带@的命令不处理
+  }
+  
+  return isTagged || isReply;
+}
+
+/**
  * 处理命令
  */
 async function handleCommand(chatId, command, username, userId, env) {
-  const cmd = command.split(' ')[0].toLowerCase();
+  // 提取真正的命令部分，移除可能存在的@botname
+  let cmd = command.split(' ')[0].toLowerCase();
+  if (cmd.includes('@')) {
+    cmd = cmd.split('@')[0].toLowerCase();
+  }
+  
   const args = command.split(' ').slice(1);
 
   switch (cmd) {
@@ -284,7 +305,7 @@ async function handleCommand(chatId, command, username, userId, env) {
       const adminUsers = JSON.parse(adminUsersStr);
       const isAdmin = username && adminUsers.includes(username);
 
-      let helpText = '🌈 TransColors LLM 使用指南\n\n可用命令:\n/start - 开始对话\n/help - 显示此帮助信息\n/quota - 查看您的使用额度\n/model - 选择使用的模型\n\n您可以直接向我提问，我会尽力提供准确、有用的信息。我的设计初衷是为更广泛的身份认同与生活方式提供支持与资源。\n\n使用限制:\n- 每人每日最多30次请求\n- 每分钟最多10次请求\n\n备注：所有信息仅供参考，重要决策请咨询专业人士。';
+      let helpText = '🌈 TransColors LLM 使用指南\n\n可用命令:\n/start - 开始对话\n/help - 显示此帮助信息\n/quota - 查看您的使用额度\n/model - 选择使用的模型\n/clear - 清除当前对话历史\n\n您可以直接向我提问，我会尽力提供准确、有用的信息。我的设计初衷是为更广泛的身份认同与生活方式提供支持与资源。\n\n使用限制:\n- 每人每日最多30次请求\n- 每分钟最多10次请求\n- 系统可记住最近' + HISTORY_CONFIG.MAX_ROUNDS + '轮对话\n- 对话历史将在' + HISTORY_CONFIG.TTL_DAYS + '天后自动过期\n\n备注：所有信息仅供参考，重要决策请咨询专业人士。';
 
       if (isAdmin) {
         helpText += '\n\n🔑 您是管理员，不受请求配额限制。\n管理员命令：\n/admin_add [用户名] - 添加新管理员';
@@ -364,6 +385,12 @@ async function handleCommand(chatId, command, username, userId, env) {
 
       return sendMessage(chatId, `🤖 *可用模型*\n\n${modelsList}\n\n要选择模型，请使用命令: /model [模型名称]\n例如: /model grok`, env);
 
+    case '/clear':
+      // 清除用户在当前聊天的对话历史
+      const clearHistoryKey = `${KV_KEYS.USER_MESSAGES}${chatId}_${userId}`;
+      await env.TRANS_COLORS_KV.delete(clearHistoryKey);
+      return sendMessage(chatId, "✅ 您在当前聊天的对话历史已清除", env);
+
     case '/admin_add':
       // 检查是否为管理员
       const adminAddStr = await env.TRANS_COLORS_KV.get(KV_KEYS.ADMIN_USERS) || "[]";
@@ -408,6 +435,19 @@ async function handleMessage(chatId, text, username, userId, env) {
     const userModel = await env.TRANS_COLORS_KV.get(KV_KEYS.USER_MODEL + userId);
     const modelProvider = userModel || DEFAULT_MODEL;
 
+    // 获取用户在当前聊天的对话历史
+    const historyKey = `${KV_KEYS.USER_MESSAGES}${chatId}_${userId}`;
+    let messages = JSON.parse(await env.TRANS_COLORS_KV.get(historyKey) || "[]");
+    
+    // 添加用户新消息
+    messages.push({role: "user", content: text});
+    
+    // 保持历史记录最多10轮对话(20条消息)
+    const maxMessages = HISTORY_CONFIG.MAX_ROUNDS * 2;
+    if (messages.length > maxMessages) {
+      messages = messages.slice(-maxMessages);
+    }
+
     // 记录开始处理消息
     console.log({
       event: "机器人请求大模型API",
@@ -421,7 +461,15 @@ async function handleMessage(chatId, text, username, userId, env) {
     });
 
     // 调用 LLM 生成回复
-    const response = await callLLM(modelProvider, text, env);
+    const response = await callLLM(modelProvider, text, messages, env);
+    
+    // 添加助手回复到历史
+    messages.push({role: "assistant", content: response});
+    
+    // 保存更新后的历史(添加7天TTL)
+    await env.TRANS_COLORS_KV.put(historyKey, JSON.stringify(messages), {
+      expirationTtl: KV_KEYS.HISTORY_TTL
+    });
 
     // 发送回复
     return sendMessage(chatId, response, env);
@@ -446,7 +494,7 @@ async function handleMessage(chatId, text, username, userId, env) {
 /**
  * 调用大语言模型 API
  */
-async function callLLM(provider, text, env) {
+async function callLLM(provider, text, messages, env) {
   const modelConfig = MODELS[provider];
 
   // 系统提示词
@@ -484,7 +532,7 @@ async function callLLM(provider, text, env) {
         model: modelConfig.model,
         messages: [
           { role: 'system', content: systemPrompt },
-          { role: 'user', content: text }
+          ...messages // 使用对话历史
         ],
         temperature: modelConfig.temperature,
         max_tokens: modelConfig.max_tokens,
