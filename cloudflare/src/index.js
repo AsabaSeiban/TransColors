@@ -144,13 +144,22 @@ async function handleRequest(request) {
       const botUsername = botInfo.result.username;
       
       // 检查消息是否@了机器人
-      if (!text.includes('@' + botUsername) && !update.message.reply_to_message?.from?.username === botUsername) {
-        // 未@机器人，不回复
+      const isTagged = text.includes('@' + botUsername);
+      const isReply = update.message.reply_to_message && 
+                      update.message.reply_to_message.from && 
+                      update.message.reply_to_message.from.username === botUsername;
+      
+      // 如果既没有@机器人，也不是回复机器人的消息，则忽略
+      if (!isTagged && !isReply) {
+        console.log(`群聊消息被过滤: ${text}`);
         return new Response('OK');
       }
       
       // 移除@部分
-      const cleanText = text.replace('@' + botUsername, '').trim();
+      let cleanText = text;
+      if (isTagged) {
+        cleanText = text.replace('@' + botUsername, '').trim();
+      }
       
       // 检查使用量限制
       const usageCheck = await checkAndUpdateUsage(userId);
