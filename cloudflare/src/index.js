@@ -164,6 +164,14 @@ async function handleRequest(request, env) {
     const text = update.message.text || '';
     const username = update.message.from.username || 'user';
     
+    // 检查是否为非文本消息（图片、视频、文件等）
+    if (!text && (update.message.photo || update.message.video || 
+        update.message.document || update.message.audio || 
+        update.message.voice || update.message.sticker || 
+        update.message.animation)) {
+      return sendMessage(chatId, "抱歉，我目前只能处理文字消息。请发送文字内容与我交流。", env);
+    }
+    
     // 记录接收到的消息 (使用结构化日志)
     console.log({
       event: "机器人接受消息",
