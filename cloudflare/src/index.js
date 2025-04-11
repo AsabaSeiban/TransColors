@@ -30,7 +30,7 @@ const MODELS = {
   openai: {
     model: "gpt-4o",
     temperature: 0.7,
-    max_tokens: 1000,
+    max_tokens: 2048,
     endpoint: "https://api.openai.com/v1/chat/completions"
   }
 };
