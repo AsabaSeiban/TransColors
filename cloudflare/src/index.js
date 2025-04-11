@@ -186,10 +186,28 @@ async function handleRequest(request, env) {
     const username = update.message.from.username || 'user';
 
     // 检查是否为非文本消息（图片、视频、文件等）
-    if (!text && (update.message.photo || update.message.video ||
-        update.message.document || update.message.audio ||
-        update.message.voice || update.message.sticker ||
+    if (!text && (update.message.photo || update.message.video || 
+        update.message.document || update.message.audio || 
+        update.message.voice || update.message.sticker || 
         update.message.animation)) {
+      
+      // 在群聊中，只有@机器人或回复机器人的非文本消息才回复
+      if (chatType !== 'private') {
+        // 获取机器人信息
+        const botInfo = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getMe`).then(r => r.json());
+        const botUsername = botInfo.result.username;
+        
+        // 检查是否@了机器人或回复机器人的消息
+        const isReply = update.message.reply_to_message && 
+                        update.message.reply_to_message.from && 
+                        update.message.reply_to_message.from.username === botUsername;
+                        
+        // 如果既没有@机器人，也不是回复机器人的消息，则静默忽略
+        if (!isReply) {
+          return new Response('OK');
+        }
+      }
+      
       return sendMessage(chatId, "抱歉，我目前只能处理文字消息。请发送文字内容与我交流。", env);
     }
 
