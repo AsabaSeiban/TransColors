@@ -1,10 +1,20 @@
 name = "transcolors"
 main = "src/index.js"
 compatibility_date = "2024-03-20"
-
-# 允许使用更长的执行时间
-usage_model = "bundled"
 compatibility_flags = ["nodejs_compat"]
+
+# Workers配置
+[build]
+command = ""
+
+[dev]
+ip = "localhost"
+port = 8787
+local_protocol = "http"
+
+# 日志配置
+[triggers]
+crons = []
 
 # 环境变量配置
 [vars]
