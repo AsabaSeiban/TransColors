@@ -65,18 +65,27 @@ const userRequestTimestamps = {};   // 用户请求时间戳记录
 let totalDailyRequests = 0;         // 总体每日请求计数
 let lastResetDay = new Date().getDate(); // 上次重置计数的日期
 
+// 用户模型偏好（实际应用中应使用KV存储）
+const userModelPreferences = {};
+
 // 模型配置
 const MODELS = {
   openai: {
     model: "gpt-4o",
     temperature: 0.7,
-    max_tokens: 2048,
+    max_tokens: 4096,
     endpoint: "https://api.openai.com/v1/chat/completions"
+  },
+  grok: {
+    model: "grok-3-latest",
+    temperature: 0.3, // 降低温度使回答更具体
+    max_tokens: 4096, // 增加长度以获取更详细回答
+    endpoint: "https://api.x.ai/v1/chat/completions" // Grok API端点
   }
 };
 
 // 默认配置
-const DEFAULT_MODEL = "openai";
+const DEFAULT_MODEL = "grok";
 const MAX_CONTEXT_LENGTH = 4000;
 
 /**
@@ -215,7 +224,7 @@ async function handleRequest(request, env) {
       }
       
       // 处理普通消息
-      return handleMessage(chatId, cleanText || text, username, env);
+      return handleMessage(chatId, cleanText || text, username, userId, env);
     }
     
     // 检查使用量限制
@@ -225,7 +234,7 @@ async function handleRequest(request, env) {
     }
     
     // 私聊消息，直接处理
-    return handleMessage(chatId, text, username, env);
+    return handleMessage(chatId, text, username, userId, env);
   } catch (error) {
     console.error('处理请求时出错:', error);
     return new Response('发生错误: ' + error.message, { status: 500 });
@@ -243,57 +252,83 @@ async function handleCommand(chatId, command, username, userId, env) {
       return sendMessage(chatId, '👋 欢迎使用TransColors LLM！\n\n我是为追求自我定义与突破既定命运的人设计的助手。提供医疗知识、心理支持、身份探索、生活适应、移民信息、职业发展和法律权益等多方面支持。所有信息仅供参考，重要决策请咨询专业人士。', env);
     
     case '/help':
-      return sendMessage(chatId, '🔍 **使用指南**\n\n' +
-        '我能回答关于医疗（包括HRT详情）、心理健康、社会适应、移民、职业和法律等方面的问题。\n\n' +
-        '**命令**：\n' +
-        '/start - 查看介绍\n' +
-        '/help - 显示此帮助\n' + 
-        '/quota - 查询您的使用限额\n\n' +
-        '私聊直接发问，群聊请@我。所有信息仅供参考，重要决策请咨询专业人士。', env);
+      return sendMessage(chatId, '🌈 *TransColors LLM 使用指南*\n\n*可用命令:*\n/start - 开始对话\n/help - 显示此帮助信息\n/quota - 查看您的使用额度\n/model - 选择使用的模型\n\n您可以直接向我提问，我会尽力提供准确、有用的信息。我的设计初衷是为更广泛的身份认同与生活方式提供支持与资源。\n\n*使用限制:*\n- 每人每日最多30次请求\n- 每分钟最多10次请求\n\n备注：所有信息仅供参考，重要决策请咨询专业人士。', env);
     
     case '/quota':
-      // 获取用户的使用情况
-      const userCount = userRequestCounts[userId] || 0;
-      const userMinuteCount = (userRequestTimestamps[userId] || []).length;
-      
-      // 计算剩余配额
-      const dailyRemaining = RATE_LIMIT.REQUESTS_PER_USER - userCount;
-      const minuteRemaining = RATE_LIMIT.REQUESTS_PER_MINUTE - userMinuteCount;
-      
-      // 获取系统总体使用情况
-      const totalUsed = totalDailyRequests || 0;
-      const systemRemaining = RATE_LIMIT.TOTAL_DAILY_LIMIT - totalUsed;
-      
-      return sendMessage(chatId, `📊 **您的使用情况**\n\n` +
-        `• 今日已使用: ${userCount}/${RATE_LIMIT.REQUESTS_PER_USER} 次\n` +
-        `• 当前分钟已使用: ${userMinuteCount}/${RATE_LIMIT.REQUESTS_PER_MINUTE} 次\n` +
-        `• 您今日剩余: ${dailyRemaining} 次\n\n` +
-        `📈 **系统总体情况**\n` +
-        `• 今日总计使用: ${totalUsed}/${RATE_LIMIT.TOTAL_DAILY_LIMIT} 次\n` +
-        `• 系统剩余配额: ${systemRemaining} 次\n\n` +
-        `⏰ 所有配额将在北京时间00:00自动重置`, env
-      );
+      const dailyCount = userRequestCounts[userId] || 0;
+      const remainingCount = RATE_LIMIT.REQUESTS_PER_USER - dailyCount;
+      return sendMessage(chatId, `📊 *使用额度统计*\n\n今日已使用: ${dailyCount}次\n剩余额度: ${remainingCount}次\n每日上限: ${RATE_LIMIT.REQUESTS_PER_USER}次\n\n每分钟最多可发送${RATE_LIMIT.REQUESTS_PER_MINUTE}次请求。`, env);
     
+    case '/model':
+      const modelArg = command.split(' ')[1]?.toLowerCase();
+      
+      // 如果提供了模型参数且它是有效的模型
+      if (modelArg && MODELS[modelArg]) {
+        userModelPreferences[userId] = modelArg;
+        return sendMessage(chatId, `✅ 您的默认模型已设置为: ${modelArg}\n\n当前模型参数:\n- temperature: ${MODELS[modelArg].temperature}\n- 最大令牌数: ${MODELS[modelArg].max_tokens}`, env);
+      } 
+      
+      // 否则，显示可用模型列表
+      const modelsList = Object.keys(MODELS).map(key => {
+        const isDefault = (key === DEFAULT_MODEL) ? ' (默认)' : '';
+        const isUserPref = (key === userModelPreferences[userId]) ? ' (✓ 您的选择)' : '';
+        return `- ${key}${isDefault}${isUserPref}`;
+      }).join('\n');
+      
+      return sendMessage(chatId, `🤖 *可用模型*\n\n${modelsList}\n\n要选择模型，请使用命令: /model [模型名称]\n例如: /model grok`, env);
+      
     default:
-      return sendMessage(chatId, '未知命令。使用 /help 查看可用命令。', env);
+      return new Response('OK');
   }
 }
 
 /**
  * 处理普通消息
  */
-async function handleMessage(chatId, text, username, env) {
+async function handleMessage(chatId, text, username, userId, env) {
   try {
     // 发送"正在输入"状态
     await sendChatAction(chatId, 'typing', env);
     
+    // 获取用户的模型偏好，如果没有则使用默认模型
+    const modelProvider = userModelPreferences[userId] || DEFAULT_MODEL;
+    
+    // 记录开始处理消息
+    console.log({
+      event: "message_processing_start",
+      chat_id: chatId,
+      user_id: userId,
+      username: username,
+      text_length: text.length,
+      model_provider: modelProvider
+    });
+    
     // 调用 LLM 生成回复
-    const response = await callLLM('openai', text, env);
+    const response = await callLLM(modelProvider, text, env);
+    
+    // 记录消息处理成功
+    console.log({
+      event: "message_processing_success",
+      chat_id: chatId,
+      user_id: userId,
+      response_length: response.length
+    });
     
     // 发送回复
     return sendMessage(chatId, response, env);
   } catch (error) {
-    console.error('处理消息时出错:', error);
+    // 记录详细的错误信息
+    console.error({
+      event: "message_processing_error",
+      chat_id: chatId,
+      user_id: userId,
+      username: username,
+      error_message: error.message,
+      error_type: error.name,
+      error_stack: error.stack,
+      timestamp: new Date().toISOString()
+    });
+    
     return sendMessage(chatId, '抱歉，处理您的请求时发生错误，请稍后再试。', env);
   }
 }
@@ -309,7 +344,8 @@ async function callLLM(provider, text, env) {
     event: "api_call_start",
     provider: provider,
     model: modelConfig.model,
-    text_length: text.length
+    text_length: text.length,
+    endpoint: modelConfig.endpoint
   });
   
   // 系统提示词
@@ -328,12 +364,20 @@ async function callLLM(provider, text, env) {
 回答时保持开放、尊重和专业，不预设任何人的身份或选择。承认每个人的经历和需求都是独特的，避免给出一刀切的建议。提供信息时注明这些仅供参考，关键决策应结合个人情况和专业咨询。支持每个人打破常规、寻找自己道路的勇气。`;
   
   try {
-    // 调用 OpenAI API
+    // 根据提供商选择API密钥
+    let apiKey;
+    if (provider === 'grok') {
+      apiKey = env.XAI_API_KEY;
+    } else {
+      apiKey = env.OPENAI_API_KEY;
+    }
+    
+    // 调用 API
     const response = await fetch(modelConfig.endpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${env.OPENAI_API_KEY}`
+        'Authorization': `Bearer ${apiKey}`
       },
       body: JSON.stringify({
         model: modelConfig.model,
@@ -342,13 +386,52 @@ async function callLLM(provider, text, env) {
           { role: 'user', content: text }
         ],
         temperature: modelConfig.temperature,
-        max_tokens: modelConfig.max_tokens
+        max_tokens: modelConfig.max_tokens,
+        stream: false
       })
     });
     
-    const data = await response.json();
+    // 记录原始响应
+    const responseText = await response.text();
+    console.log({
+      event: "api_raw_response",
+      provider: provider,
+      status: response.status,
+      response_text: responseText
+    });
+    
+    let data;
+    try {
+      data = JSON.parse(responseText);
+    } catch (parseError) {
+      console.error({
+        event: "api_response_parse_error",
+        provider: provider,
+        error: parseError.message,
+        response_text: responseText
+      });
+      throw new Error(`无法解析API响应: ${parseError.message}`);
+    }
+    
+    // 记录API响应
+    console.log({
+      event: "api_response",
+      provider: provider,
+      status: response.status,
+      response_data: data
+    });
+    
     if (!response.ok) {
       throw new Error(`API 错误: ${data.error?.message || JSON.stringify(data)}`);
+    }
+    
+    // 检查响应数据格式
+    if (!data.choices || !Array.isArray(data.choices) || data.choices.length === 0) {
+      throw new Error(`无效的API响应格式: ${JSON.stringify(data)}`);
+    }
+    
+    if (!data.choices[0].message || !data.choices[0].message.content) {
+      throw new Error(`响应中缺少消息内容: ${JSON.stringify(data)}`);
     }
     
     // API调用结果记录
@@ -367,7 +450,8 @@ async function callLLM(provider, text, env) {
       event: "api_call_error",
       provider: provider,
       error_message: error.message,
-      error_type: error.name
+      error_type: error.name,
+      error_stack: error.stack
     });
     
     throw error;
