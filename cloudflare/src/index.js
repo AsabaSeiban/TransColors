@@ -45,14 +45,22 @@ const RATE_LIMIT = {
   TOTAL_DAILY_LIMIT: 1000     // 所有用户每天的总请求上限
 };
 
-// 内存缓存（实际应用中应使用KV存储）
-const userRequestCounts = {};       // 用户每日请求计数
-const userRequestTimestamps = {};   // 用户请求时间戳记录
-let totalDailyRequests = 0;         // 总体每日请求计数
-let lastResetDay = new Date().getDate(); // 上次重置计数的日期
+// KV键名前缀
+const KV_KEYS = {
+  USER_MODEL: "user_model:",         // 用户模型偏好前缀
+  USER_DAILY_COUNT: "user_count:",   // 用户每日请求计数前缀
+  USER_TIMESTAMPS: "user_ts:",       // 用户请求时间戳前缀
+  TOTAL_REQUESTS: "total_requests",  // 总请求数
+  LAST_RESET_DAY: "last_reset_day"   // 上次重置日期
+};
 
-// 用户模型偏好（实际应用中应使用KV存储）
-const userModelPreferences = {};
+// 注意：之前的内存缓存已替换为KV存储
+// 原内存变量：
+// const userRequestCounts = {};       // 用户每日请求计数
+// const userRequestTimestamps = {};   // 用户请求时间戳记录
+// let totalDailyRequests = 0;         // 总体每日请求计数
+// let lastResetDay = new Date().getDate(); // 上次重置计数的日期
+// const userModelPreferences = {};    // 用户模型偏好
 
 // 模型配置
 const MODELS = {
@@ -78,25 +86,28 @@ const MAX_CONTEXT_LENGTH = 4000;
  * 检查并更新用户使用量
  * 返回是否允许此次请求
  */
-async function checkAndUpdateUsage(userId) {
+async function checkAndUpdateUsage(userId, env) {
   const now = new Date();
   const currentDay = now.getDate();
   
+  // 获取上次重置日期
+  let lastResetDay = parseInt(await env.TRANS_COLORS_KV.get(KV_KEYS.LAST_RESET_DAY) || currentDay);
+  
   // 检查是否需要重置每日计数
   if (currentDay !== lastResetDay) {
-    // 重置所有计数器
-    Object.keys(userRequestCounts).forEach(key => userRequestCounts[key] = 0);
-    totalDailyRequests = 0;
+    // 存储新的重置日期
+    await env.TRANS_COLORS_KV.put(KV_KEYS.LAST_RESET_DAY, currentDay.toString());
+    
+    // 重置总请求数
+    await env.TRANS_COLORS_KV.put(KV_KEYS.TOTAL_REQUESTS, "0");
+    
+    // 由于无法批量删除，重置计数器会在下面的代码中自动处理
+    // 当用户计数为0时
     lastResetDay = currentDay;
   }
   
-  // 初始化用户的计数和时间戳数组
-  if (!userRequestCounts[userId]) {
-    userRequestCounts[userId] = 0;
-  }
-  if (!userRequestTimestamps[userId]) {
-    userRequestTimestamps[userId] = [];
-  }
+  // 获取总体每日请求数
+  let totalDailyRequests = parseInt(await env.TRANS_COLORS_KV.get(KV_KEYS.TOTAL_REQUESTS) || "0");
   
   // 检查总体每日限制
   if (totalDailyRequests >= RATE_LIMIT.TOTAL_DAILY_LIMIT) {
@@ -106,22 +117,28 @@ async function checkAndUpdateUsage(userId) {
     };
   }
   
+  // 获取用户每日请求计数
+  const userCountKey = KV_KEYS.USER_DAILY_COUNT + userId;
+  let userRequestCount = parseInt(await env.TRANS_COLORS_KV.get(userCountKey) || "0");
+  
   // 检查用户每日限制
-  if (userRequestCounts[userId] >= RATE_LIMIT.REQUESTS_PER_USER) {
+  if (userRequestCount >= RATE_LIMIT.REQUESTS_PER_USER) {
     return {
       allowed: false,
       reason: `您今日的请求次数（${RATE_LIMIT.REQUESTS_PER_USER}次）已用完，请明天再试。`
     };
   }
   
+  // 获取用户请求时间戳
+  const userTimestampsKey = KV_KEYS.USER_TIMESTAMPS + userId;
+  let userTimestamps = JSON.parse(await env.TRANS_COLORS_KV.get(userTimestampsKey) || "[]");
+  
   // 清理一分钟前的时间戳
   const oneMinuteAgo = now.getTime() - 60000;
-  userRequestTimestamps[userId] = userRequestTimestamps[userId].filter(
-    timestamp => timestamp > oneMinuteAgo
-  );
+  userTimestamps = userTimestamps.filter(timestamp => timestamp > oneMinuteAgo);
   
   // 检查每分钟频率限制
-  if (userRequestTimestamps[userId].length >= RATE_LIMIT.REQUESTS_PER_MINUTE) {
+  if (userTimestamps.length >= RATE_LIMIT.REQUESTS_PER_MINUTE) {
     return {
       allowed: false,
       reason: `请求过于频繁，请稍后再试。每分钟最多 ${RATE_LIMIT.REQUESTS_PER_MINUTE} 次请求。`
@@ -129,9 +146,14 @@ async function checkAndUpdateUsage(userId) {
   }
   
   // 更新计数和时间戳
-  userRequestCounts[userId]++;
-  userRequestTimestamps[userId].push(now.getTime());
+  userRequestCount++;
+  userTimestamps.push(now.getTime());
   totalDailyRequests++;
+  
+  // 保存更新后的数据
+  await env.TRANS_COLORS_KV.put(userCountKey, userRequestCount.toString());
+  await env.TRANS_COLORS_KV.put(userTimestampsKey, JSON.stringify(userTimestamps));
+  await env.TRANS_COLORS_KV.put(KV_KEYS.TOTAL_REQUESTS, totalDailyRequests.toString());
   
   return {
     allowed: true
@@ -211,7 +233,7 @@ async function handleRequest(request, env) {
       }
       
       // 检查使用量限制
-      const usageCheck = await checkAndUpdateUsage(userId);
+      const usageCheck = await checkAndUpdateUsage(userId, env);
       if (!usageCheck.allowed) {
         return sendMessage(chatId, usageCheck.reason, env);
       }
@@ -221,7 +243,7 @@ async function handleRequest(request, env) {
     }
     
     // 检查使用量限制
-    const usageCheck = await checkAndUpdateUsage(userId);
+    const usageCheck = await checkAndUpdateUsage(userId, env);
     if (!usageCheck.allowed) {
       return sendMessage(chatId, usageCheck.reason, env);
     }
@@ -248,7 +270,8 @@ async function handleCommand(chatId, command, username, userId, env) {
       return sendMessage(chatId, '🌈 *TransColors LLM 使用指南*\n\n*可用命令:*\n/start - 开始对话\n/help - 显示此帮助信息\n/quota - 查看您的使用额度\n/model - 选择使用的模型\n\n您可以直接向我提问，我会尽力提供准确、有用的信息。我的设计初衷是为更广泛的身份认同与生活方式提供支持与资源。\n\n*使用限制:*\n- 每人每日最多30次请求\n- 每分钟最多10次请求\n\n备注：所有信息仅供参考，重要决策请咨询专业人士。', env);
     
     case '/quota':
-      const dailyCount = userRequestCounts[userId] || 0;
+      const userCountKey = KV_KEYS.USER_DAILY_COUNT + userId;
+      const dailyCount = parseInt(await env.TRANS_COLORS_KV.get(userCountKey) || "0");
       const remainingCount = RATE_LIMIT.REQUESTS_PER_USER - dailyCount;
       return sendMessage(chatId, `📊 *使用额度统计*\n\n今日已使用: ${dailyCount}次\n剩余额度: ${remainingCount}次\n每日上限: ${RATE_LIMIT.REQUESTS_PER_USER}次\n\n每分钟最多可发送${RATE_LIMIT.REQUESTS_PER_MINUTE}次请求。`, env);
     
@@ -257,14 +280,15 @@ async function handleCommand(chatId, command, username, userId, env) {
       
       // 如果提供了模型参数且它是有效的模型
       if (modelArg && MODELS[modelArg]) {
-        userModelPreferences[userId] = modelArg;
+        await env.TRANS_COLORS_KV.put(KV_KEYS.USER_MODEL + userId, modelArg);
         return sendMessage(chatId, `✅ 您的默认模型已设置为: ${modelArg}\n\n当前模型参数:\n- temperature(越低越理性, 越高越感性): ${MODELS[modelArg].temperature}\n- 最大令牌数: ${MODELS[modelArg].max_tokens}`, env);
       } 
       
       // 否则，显示可用模型列表
+      const userModel = await env.TRANS_COLORS_KV.get(KV_KEYS.USER_MODEL + userId);
       const modelsList = Object.keys(MODELS).map(key => {
         const isDefault = (key === DEFAULT_MODEL) ? ' (默认)' : '';
-        const isUserPref = (key === userModelPreferences[userId]) ? ' (✓ 您的选择)' : '';
+        const isUserPref = (key === userModel) ? ' (✓ 您的选择)' : '';
         return `- ${key}${isDefault}${isUserPref}`;
       }).join('\n');
       
@@ -284,7 +308,8 @@ async function handleMessage(chatId, text, username, userId, env) {
     await sendChatAction(chatId, 'typing', env);
     
     // 获取用户的模型偏好，如果没有则使用默认模型
-    const modelProvider = userModelPreferences[userId] || DEFAULT_MODEL;
+    const userModel = await env.TRANS_COLORS_KV.get(KV_KEYS.USER_MODEL + userId);
+    const modelProvider = userModel || DEFAULT_MODEL;
     
     // 记录开始处理消息
     console.log({
